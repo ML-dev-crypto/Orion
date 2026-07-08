@@ -1,6 +1,19 @@
 package flags
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
+
+// Equal reports whether two flags are identical in all fields.
+func Equal(a, b Flag) bool {
+	return a.Key == b.Key &&
+		a.Enabled == b.Enabled &&
+		a.RolloutPct == b.RolloutPct &&
+		a.Description == b.Description &&
+		reflect.DeepEqual(a.TargetingRules, b.TargetingRules) &&
+		reflect.DeepEqual(a.Schedule, b.Schedule)
+}
 
 // Flag represents a single feature flag.
 type Flag struct {

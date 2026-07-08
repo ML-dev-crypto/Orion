@@ -15,15 +15,10 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
-func NewPostgresStore(dsn string) (*PostgresStore, error) {
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		return nil, err
-	}
-	if err := db.PingContext(context.Background()); err != nil {
-		return nil, err
-	}
-	return &PostgresStore{db: db}, nil
+func NewPostgresStore(db *sql.DB) *PostgresStore {
+    return &PostgresStore{
+        db: db,
+    }
 }
 
 func (s *PostgresStore) Get(ctx context.Context, key string) (flags.Flag, error) {
@@ -48,7 +43,7 @@ func (s *PostgresStore) Get(ctx context.Context, key string) (flags.Flag, error)
 			return flags.Flag{}, err
 		}
 	}
-	f.Schedule = scheduleFromNullable(startAt, endAt)
+	f.Schedule = ScheduleFromNullable(startAt, endAt)
 	return f, nil
 }
 
@@ -58,7 +53,7 @@ func (s *PostgresStore) Put(ctx context.Context, f flags.Flag) error {
 		return err
 	}
 
-	startAt, endAt := nullableFromSchedule(f.Schedule)
+	startAt, endAt := NullableFromSchedule(f.Schedule)
 
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO flags (key, enabled, rollout_pct, description, targeting_rules, start_at, end_at, updated_at)
@@ -106,7 +101,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]flags.Flag, error) {
 				return nil, err
 			}
 		}
-		f.Schedule = scheduleFromNullable(startAt, endAt)
+		f.Schedule = ScheduleFromNullable(startAt, endAt)
 		result = append(result, f)
 	}
 	return result, rows.Err()
@@ -114,7 +109,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]flags.Flag, error) {
 
 // --- helpers converting between *flags.Schedule and sql.NullTime ---
 
-func scheduleFromNullable(startAt, endAt sql.NullTime) *flags.Schedule {
+func ScheduleFromNullable(startAt, endAt sql.NullTime) *flags.Schedule {
 	if !startAt.Valid && !endAt.Valid {
 		return nil
 	}
@@ -130,7 +125,7 @@ func scheduleFromNullable(startAt, endAt sql.NullTime) *flags.Schedule {
 	return sched
 }
 
-func nullableFromSchedule(s *flags.Schedule) (startAt, endAt sql.NullTime) {
+func NullableFromSchedule(s *flags.Schedule) (startAt, endAt sql.NullTime) {
 	if s == nil {
 		return sql.NullTime{}, sql.NullTime{}
 	}

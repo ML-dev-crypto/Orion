@@ -5,16 +5,20 @@ import (
 	"errors"
 	"net/http"
 
+	"orion/internal/audit"
 	"orion/internal/flags"
+	"orion/internal/service"
 	"orion/internal/store"
 )
 
 type Handler struct {
-	Store store.Storage
+	Store  store.Storage
+	Audit  audit.Store
+	Writer service.FlagWriter
 }
 
-func NewHandler(s store.Storage) *Handler {
-	return &Handler{Store: s}
+func NewHandler(s store.Storage, a audit.Store, w service.FlagWriter) *Handler {
+	return &Handler{Store: s, Audit: a, Writer: w}
 }
 
 func (h *Handler) Routes() *http.ServeMux {
@@ -24,6 +28,7 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /flags/{key}", h.get)
 	mux.HandleFunc("DELETE /flags/{key}", h.delete)
 	mux.HandleFunc("POST /flags/{key}/evaluate", h.evaluate)
+	mux.HandleFunc("GET /flags/{key}/audit", h.listAudit)
 	return mux
 }
 
@@ -38,11 +43,13 @@ func (h *Handler) createOrUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.Put(r.Context(), f); err != nil {
+	result, err := h.Writer.Upsert(r.Context(), f)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, f)
+
+	writeJSON(w, http.StatusOK, result.Flag)
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -66,17 +73,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	if err := h.Store.Delete(r.Context(), key); err != nil {
+	if _, err := h.Writer.Delete(r.Context(), key); err != nil {
 		respondStoreErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// evaluate answers "is this flag on for this specific user?" Now a
-// POST because targeting rules need arbitrary user attributes
-// (country, plan, etc.), and there's no clean way to pass a map
-// through a query string.
 func (h *Handler) evaluate(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 
@@ -98,6 +101,16 @@ func (h *Handler) evaluate(w http.ResponseWriter, r *http.Request) {
 
 	enabled := flags.Evaluate(f, req)
 	writeJSON(w, http.StatusOK, flags.EvalResponse{Key: key, Enabled: enabled})
+}
+
+func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	entries, err := h.Audit.List(r.Context(), key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
