@@ -1,0 +1,2 @@
+ALTER TABLE flags
+ADD COLUMN IF NOT EXISTS targeting_rules JSONB NOT NULL DEFAULT '[]'::jsonb;
