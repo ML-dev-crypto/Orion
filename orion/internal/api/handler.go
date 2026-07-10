@@ -6,19 +6,19 @@ import (
 	"net/http"
 
 	"orion/internal/audit"
+	"orion/internal/cluster"
 	"orion/internal/flags"
-	"orion/internal/service"
 	"orion/internal/store"
 )
 
 type Handler struct {
-	Store  store.Storage
-	Audit  audit.Store
-	Writer service.FlagWriter
+	Store   store.Storage
+	Audit   audit.Store
+	Cluster *cluster.Manager
 }
 
-func NewHandler(s store.Storage, a audit.Store, w service.FlagWriter) *Handler {
-	return &Handler{Store: s, Audit: a, Writer: w}
+func NewHandler(s store.Storage, a audit.Store, c *cluster.Manager) *Handler {
+	return &Handler{Store: s, Audit: a, Cluster: c}
 }
 
 func (h *Handler) Routes() *http.ServeMux {
@@ -43,9 +43,9 @@ func (h *Handler) createOrUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.Writer.Upsert(r.Context(), f)
+	result, err := h.Cluster.Upsert(r.Context(), f)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWriteErr(w, err)
 		return
 	}
 
@@ -73,8 +73,8 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	if _, err := h.Writer.Delete(r.Context(), key); err != nil {
-		respondStoreErr(w, err)
+	if _, err := h.Cluster.Delete(r.Context(), key); err != nil {
+		respondWriteErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -125,4 +125,16 @@ func respondStoreErr(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+// respondWriteErr additionally handles cluster.ErrNotLeader — stage 6
+// (read/write routing) will replace this with an actual redirect/proxy
+// to the real leader; for now the client just learns it hit the wrong
+// node.
+func respondWriteErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, cluster.ErrNotLeader) {
+		http.Error(w, "this node is not the leader", http.StatusBadRequest)
+		return
+	}
+	respondStoreErr(w, err)
 }
