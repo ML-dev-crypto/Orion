@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"orion/internal/audit"
@@ -155,5 +156,82 @@ func TestCluster_Leader_ResolvesToFullNode(t *testing.T) {
 	}
 	if leader.Address != "node-2:8080" {
 		t.Errorf("got address %q, want node-2:8080", leader.Address)
+	}
+}
+
+func TestParsePeers_DuplicateID(t *testing.T) {
+	_, err := ParsePeers("node1=localhost:8081,node1=localhost:9999,node2=localhost:8082")
+	if err == nil {
+		t.Fatal("expected error for duplicate ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), "node1") {
+		t.Errorf("error should mention 'duplicate' and 'node1', got: %v", err)
+	}
+}
+
+func TestParsePeers_DuplicateAddress(t *testing.T) {
+	_, err := ParsePeers("node1=localhost:8081,node2=localhost:8081")
+	if err == nil {
+		t.Fatal("expected error for duplicate address, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") || !strings.Contains(err.Error(), "localhost:8081") {
+		t.Errorf("error should mention 'duplicate' and 'localhost:8081', got: %v", err)
+	}
+}
+
+func TestParsePeers_ValidMultiNode(t *testing.T) {
+	nodes, err := ParsePeers("node1=localhost:8081,node2=localhost:8082,node3=localhost:8083")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 3 {
+		t.Errorf("got %d nodes, want 3", len(nodes))
+	}
+	if nodes[0].ID != "node1" || nodes[0].Address != "localhost:8081" {
+		t.Errorf("unexpected first node: %+v", nodes[0])
+	}
+}
+
+func TestCluster_Address(t *testing.T) {
+	c, err := NewCluster(
+		Node{ID: "self", Address: "localhost:9000"},
+		[]Node{{ID: "self", Address: "localhost:9000"}},
+		"self")
+	if err != nil {
+		t.Fatalf("NewCluster failed: %v", err)
+	}
+	if c.Address() != "localhost:9000" {
+		t.Errorf("Address() = %q, want localhost:9000", c.Address())
+	}
+}
+
+func TestCluster_NodeByID(t *testing.T) {
+	self := Node{ID: "node-1", Address: "node-1:8080"}
+	all := []Node{
+		{ID: "node-1", Address: "node-1:8080"},
+		{ID: "node-2", Address: "node-2:8082"},
+		{ID: "node-3", Address: "node-3:8083"},
+	}
+	c, err := NewCluster(self, all, "node-1")
+	if err != nil {
+		t.Fatalf("NewCluster failed: %v", err)
+	}
+
+	// Resolve self
+	n, ok := c.NodeByID("node-1")
+	if !ok || n.Address != "node-1:8080" {
+		t.Errorf("NodeByID(node-1) = %+v, %v; want node-1:8080, true", n, ok)
+	}
+
+	// Resolve a peer
+	n, ok = c.NodeByID("node-2")
+	if !ok || n.Address != "node-2:8082" {
+		t.Errorf("NodeByID(node-2) = %+v, %v; want node-2:8082, true", n, ok)
+	}
+
+	// Unknown ID
+	_, ok = c.NodeByID("node-99")
+	if ok {
+		t.Error("NodeByID(node-99) returned ok=true, expected false")
 	}
 }

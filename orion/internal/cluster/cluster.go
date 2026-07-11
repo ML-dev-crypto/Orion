@@ -103,3 +103,24 @@ func (c *Cluster) Majority() int {
 	n := len(c.Peers) + 1
 	return n/2 + 1
 }
+
+// Address returns this node's own address. Convenience accessor so
+// callers don't need to reach into c.Self.Address directly.
+func (c *Cluster) Address() string {
+	return c.Self.Address
+}
+
+// NodeByID resolves any node ID — including Self — to a full Node.
+// Returns false if the ID is unknown. Useful during replication when
+// the leader needs to address a specific peer by ID.
+func (c *Cluster) NodeByID(id string) (Node, bool) {
+	if c.Self.ID == id {
+		return c.Self, true
+	}
+	for _, p := range c.Peers {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Node{}, false
+}
