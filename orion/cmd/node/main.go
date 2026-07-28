@@ -43,15 +43,19 @@ func main() {
 	backend := store.NewMemoryStore()
 	auditBackend := audit.NewMemoryStore()
 	writer := service.NewMemoryFlagWriter(backend, auditBackend)
-	manager := cluster.NewManager(c, writer)
+	rpcClient := cluster.NewClient()
+	manager := cluster.NewManager(c, writer, rpcClient)
+	rpcHandler := cluster.NewRPCHandler(backend)
 
 	h := api.NewHandler(backend, auditBackend, manager)
+	mux := h.Routes()
+	rpcHandler.RegisterRoutes(mux)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("Orion node %q listening on %s (leader=%s, is_leader=%v, peers=%d)",
 		cfg.Cluster.NodeID, addr, leaderID, c.IsLeader(), len(c.Peers))
 
-	if err := http.ListenAndServe(addr, h.Routes()); err != nil {
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -12,6 +12,20 @@ import (
 	"orion/internal/store"
 )
 
+// fakeRPCClient is a no-op RPCClient used in tests, so unit tests
+// exercising Manager don't make real network calls to fake peer
+// addresses. Real end-to-end replication is proven separately in
+// replication_test.go using actual httptest servers.
+type fakeRPCClient struct{}
+
+func (fakeRPCClient) Replicate(ctx context.Context, peer Node, f flags.Flag) error {
+	return nil
+}
+
+func (fakeRPCClient) ReplicateDelete(ctx context.Context, peer Node, key string) error {
+	return nil
+}
+
 func newTestManager(t *testing.T, selfID, leaderID string) *Manager {
 	t.Helper()
 	self := Node{ID: selfID, Address: selfID + ":8080"}
@@ -27,7 +41,7 @@ func newTestManager(t *testing.T, selfID, leaderID string) *Manager {
 	s := store.NewMemoryStore()
 	a := audit.NewMemoryStore()
 	w := service.NewMemoryFlagWriter(s, a)
-	return NewManager(c, w)
+	return NewManager(c, w, fakeRPCClient{})
 }
 
 func TestManager_Upsert_LeaderAccepts(t *testing.T) {

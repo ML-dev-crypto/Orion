@@ -40,12 +40,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	manager := cluster.NewManager(c, writer)
+	rpcClient := cluster.NewClient()
+	manager := cluster.NewManager(c, writer, rpcClient)
+	rpcHandler := cluster.NewRPCHandler(backend)
 
 	h := api.NewHandler(backend, auditBackend, manager)
+	mux := h.Routes()
+	rpcHandler.RegisterRoutes(mux)
 
 	log.Println("Orion listening on :8080")
-	if err := http.ListenAndServe(":8080", h.Routes()); err != nil {
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }
