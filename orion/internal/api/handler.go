@@ -127,13 +127,19 @@ func respondStoreErr(w http.ResponseWriter, err error) {
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
-// respondWriteErr additionally handles cluster.ErrNotLeader — stage 6
-// (read/write routing) will replace this with an actual redirect/proxy
-// to the real leader; for now the client just learns it hit the wrong
-// node.
+// respondWriteErr additionally handles cluster.ErrQuorumNotReached,
+// mapped to 503: the request was valid and WAS applied to the
+// leader's local store, but the cluster couldn't confirm durability
+// across a majority right now — that's "the service can't currently
+// guarantee what you asked for," not a client mistake (400) or an
+// unexpected crash (500).
 func respondWriteErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, cluster.ErrNotLeader) {
 		http.Error(w, "this node is not the leader", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(err, cluster.ErrQuorumNotReached) {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	respondStoreErr(w, err)

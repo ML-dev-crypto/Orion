@@ -3,8 +3,10 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"orion/internal/flags"
@@ -13,9 +15,27 @@ import (
 
 var ErrNotLeader = errors.New("cluster: this node is not the leader")
 
+// ErrQuorumNotReached means the write was applied to the leader's own
+// store, but too few peers acknowledged it to satisfy Majority().
+//
+// KNOWN LIMITATION, stated explicitly rather than hidden: the leader's
+// local write already happened BEFORE replication was attempted, so
+// when this error is returned, the leader's local state has already
+// diverged from what was just reported as a failure — the data exists
+// locally but isn't durable across a majority. Real Raft solves this
+// with a retry loop and a commit-index concept; that complexity is
+// out of scope for this stage. This is accepted as a documented gap
+// for now, not silently pretended away with a fake rollback (which
+// would need real undo semantics: was this a create that should be
+// deleted, or an update that should revert to a specific prior
+// value?).
+var ErrQuorumNotReached = errors.New("cluster: write did not reach quorum")
+
 // Manager is what the HTTP handler talks to for writes. It gates
-// writes to the leader, delegates the write to FlagWriter, then
-// replicates the result to every peer.
+// writes to the leader, delegates the write to FlagWriter, replicates
+// the result to every peer, and requires a majority of the cluster
+// (including the leader's own local write) to have the data before
+// reporting success.
 type Manager struct {
 	cluster *Cluster
 	writer  service.FlagWriter
@@ -34,7 +54,11 @@ func (m *Manager) Upsert(ctx context.Context, f flags.Flag) (service.WriteResult
 	if err != nil {
 		return result, err
 	}
-	m.replicate(result.Flag)
+	acks := 1 + m.replicate(result.Flag)
+	if acks < m.cluster.Majority() {
+		return result, fmt.Errorf("%w: %d/%d acks, need %d",
+			ErrQuorumNotReached, acks, len(m.cluster.Peers)+1, m.cluster.Majority())
+	}
 	return result, nil
 }
 
@@ -46,19 +70,20 @@ func (m *Manager) Delete(ctx context.Context, key string) (flags.Flag, error) {
 	if err != nil {
 		return deleted, err
 	}
-	m.replicateDelete(key)
+	acks := 1 + m.replicateDelete(key)
+	if acks < m.cluster.Majority() {
+		return deleted, fmt.Errorf("%w: %d/%d acks, need %d",
+			ErrQuorumNotReached, acks, len(m.cluster.Peers)+1, m.cluster.Majority())
+	}
 	return deleted, nil
 }
 
-// replicate sends f to every peer IN PARALLEL and waits for every
-// attempt to finish (success or failure) before returning. This is
-// "fire-and-forget" in the sense of no quorum requirement yet — a
-// failed peer doesn't fail the write. It is NOT detached/background:
-// waiting for attempts to complete (without requiring success) is
-// what makes "leader has data, follower has identical data" checkable
-// immediately after a write returns, rather than racy.
-func (m *Manager) replicate(f flags.Flag) {
+// replicate sends f to every peer in parallel, waits for every
+// attempt to finish, and returns how many SUCCEEDED — not just how
+// many were attempted (that's the change from stage 2).
+func (m *Manager) replicate(f flags.Flag) int {
 	var wg sync.WaitGroup
+	var successes atomic.Int32
 	for _, peer := range m.cluster.Peers {
 		peer := peer
 		wg.Add(1)
@@ -68,14 +93,18 @@ func (m *Manager) replicate(f flags.Flag) {
 			defer cancel()
 			if err := m.rpc.Replicate(ctx, peer, f); err != nil {
 				log.Printf("cluster: replication of %q to %s failed: %v", f.Key, peer.ID, err)
+				return
 			}
+			successes.Add(1)
 		}()
 	}
 	wg.Wait()
+	return int(successes.Load())
 }
 
-func (m *Manager) replicateDelete(key string) {
+func (m *Manager) replicateDelete(key string) int {
 	var wg sync.WaitGroup
+	var successes atomic.Int32
 	for _, peer := range m.cluster.Peers {
 		peer := peer
 		wg.Add(1)
@@ -85,10 +114,13 @@ func (m *Manager) replicateDelete(key string) {
 			defer cancel()
 			if err := m.rpc.ReplicateDelete(ctx, peer, key); err != nil {
 				log.Printf("cluster: replicate-delete of %q to %s failed: %v", key, peer.ID, err)
+				return
 			}
+			successes.Add(1)
 		}()
 	}
 	wg.Wait()
+	return int(successes.Load())
 }
 
 type Status struct {
