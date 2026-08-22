@@ -18,6 +18,7 @@ import (
 type RPCClient interface {
 	Replicate(ctx context.Context, peer Node, f flags.Flag) error
 	ReplicateDelete(ctx context.Context, peer Node, key string) error
+	Heartbeat(ctx context.Context, peer Node) error
 }
 
 // Client is the real, HTTP-based RPCClient implementation used in
@@ -70,6 +71,26 @@ func (c *Client) ReplicateDelete(ctx context.Context, peer Node, key string) err
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("cluster: peer %s returned status %d for replicate-delete", peer.ID, resp.StatusCode)
+	}
+	return nil
+}
+
+// Heartbeat pings a single peer's /internal/cluster/heartbeat
+// endpoint. No body, no response payload — the call succeeding at all
+// (2xx) is the entire signal.
+func (c *Client) Heartbeat(ctx context.Context, peer Node) error {
+	url := fmt.Sprintf("http://%s/internal/cluster/heartbeat", peer.Address)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("cluster: building heartbeat request to %s: %w", peer.ID, err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("cluster: heartbeat request to %s failed: %w", peer.ID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("cluster: peer %s returned status %d for heartbeat", peer.ID, resp.StatusCode)
 	}
 	return nil
 }

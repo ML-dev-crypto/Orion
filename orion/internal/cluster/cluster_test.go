@@ -26,6 +26,10 @@ func (fakeRPCClient) ReplicateDelete(ctx context.Context, peer Node, key string)
 	return nil
 }
 
+func (fakeRPCClient) Heartbeat(ctx context.Context, peer Node) error {
+	return nil
+}
+
 func newTestManager(t *testing.T, selfID, leaderID string) *Manager {
 	t.Helper()
 	self := Node{ID: selfID, Address: selfID + ":8080"}

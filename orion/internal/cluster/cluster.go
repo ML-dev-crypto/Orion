@@ -3,31 +3,30 @@ package cluster
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 // Cluster holds cluster membership and leadership state. It knows WHO
-// the nodes are and WHO the leader is — it does not know how flags
-// are stored or replicated. That's Manager's job (and, beneath that,
-// service.FlagWriter's).
+// the nodes are, WHO the leader is, and whether the leader has been
+// heard from recently — it does not know how flags are stored or
+// replicated. That's Manager's job.
 type Cluster struct {
 	Self  Node
-	Peers []Node // filtered by NewCluster; never includes Self
+	Peers []Node
 
-	mu       sync.RWMutex
-	leaderID string
+	mu                  sync.RWMutex
+	leaderID            string
+	lastLeaderHeartbeat time.Time
 }
 
-// NewCluster builds a Cluster, filtering Self out of `all` automatically
-// so no caller can accidentally leave Self in Peers (which would make
-// a node try to replicate to itself once that logic exists).
+// NewCluster builds a Cluster, filtering Self out of `all` automatically.
 //
-// initialLeaderID is required, not inferred or defaulted — an empty
-// string here would be indistinguishable from Go's zero-value for
-// leaderID, and if Self.ID were ever also accidentally empty,
-// IsLeader() would silently evaluate "" == "" and a misconfigured
-// node would believe it's the leader. Requiring both explicitly and
-// erroring on empty closes that off at construction time rather than
-// leaving it as a latent bug to hit at runtime.
+// lastLeaderHeartbeat is initialized to "now" rather than left at
+// Go's zero value: a follower checking LeaderConsideredDead()
+// immediately after startup, before the leader's first real
+// heartbeat has had a chance to arrive, would otherwise report the
+// leader dead purely due to startup timing. Starting optimistic gives
+// the first heartbeat interval a grace period.
 func NewCluster(self Node, all []Node, initialLeaderID string) (*Cluster, error) {
 	if self.ID == "" {
 		return nil, errors.New("cluster: self.ID must not be empty")
@@ -44,34 +43,25 @@ func NewCluster(self Node, all []Node, initialLeaderID string) (*Cluster, error)
 	}
 
 	return &Cluster{
-		Self:     self,
-		Peers:    peers,
-		leaderID: initialLeaderID,
+		Self:                self,
+		Peers:               peers,
+		leaderID:            initialLeaderID,
+		lastLeaderHeartbeat: time.Now(),
 	}, nil
 }
 
-// LeaderID returns the current leader's ID.
 func (c *Cluster) LeaderID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.leaderID
 }
 
-// SetLeader updates the current leader. Concurrency-safe — this will
-// be called from a background election/heartbeat goroutine in later
-// stages while HTTP handler goroutines concurrently call IsLeader().
 func (c *Cluster) SetLeader(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.leaderID = id
 }
 
-// IsLeader reports whether THIS node is currently the leader. Guards
-// against an empty Self.ID explicitly — NewCluster already rejects
-// this at construction time, but Self is an exported field, so a
-// Cluster built via a bare struct literal (bypassing NewCluster
-// entirely) wouldn't get that protection. This check makes the
-// invariant hold regardless of how the Cluster was constructed.
 func (c *Cluster) IsLeader() bool {
 	if c.Self.ID == "" {
 		return false
@@ -79,40 +69,10 @@ func (c *Cluster) IsLeader() bool {
 	return c.LeaderID() == c.Self.ID
 }
 
-// Leader resolves the current leader ID to a full Node, searching Self
-// and Peers. The bool is false if the leader ID doesn't match any
-// known node.
 func (c *Cluster) Leader() (Node, bool) {
-	id := c.LeaderID()
-	if c.Self.ID == id {
-		return c.Self, true
-	}
-	for _, p := range c.Peers {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return Node{}, false
+	return c.NodeByID(c.LeaderID())
 }
 
-// Majority returns the number of acks — including the leader's own
-// local write, which always counts as the first one — needed to
-// commit a write. floor(N/2)+1 where N is total cluster size
-// (Peers + Self).
-func (c *Cluster) Majority() int {
-	n := len(c.Peers) + 1
-	return n/2 + 1
-}
-
-// Address returns this node's own address. Convenience accessor so
-// callers don't need to reach into c.Self.Address directly.
-func (c *Cluster) Address() string {
-	return c.Self.Address
-}
-
-// NodeByID resolves any node ID — including Self — to a full Node.
-// Returns false if the ID is unknown. Useful during replication when
-// the leader needs to address a specific peer by ID.
 func (c *Cluster) NodeByID(id string) (Node, bool) {
 	if c.Self.ID == id {
 		return c.Self, true
@@ -123,4 +83,40 @@ func (c *Cluster) NodeByID(id string) (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+
+func (c *Cluster) Majority() int {
+	n := len(c.Peers) + 1
+	return n/2 + 1
+}
+
+func (c *Cluster) Address() string {
+	return c.Self.Address
+}
+
+// RecordHeartbeat marks that a heartbeat was just received from the
+// leader. Called by RPCHandler when this node receives a heartbeat RPC.
+func (c *Cluster) RecordHeartbeat() {
+	c.recordHeartbeatAt(time.Now())
+}
+
+func (c *Cluster) recordHeartbeatAt(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastLeaderHeartbeat = t
+}
+
+// LeaderConsideredDead reports whether it's been longer than timeout
+// since the last heartbeat was recorded. This ONLY reports state — it
+// does not trigger an election or change write behavior.
+func (c *Cluster) LeaderConsideredDead(timeout time.Duration) bool {
+	return c.leaderConsideredDeadAt(time.Now(), timeout)
+}
+
+// leaderConsideredDeadAt is the clock-injected variant used by tests
+// for deterministic timing — same pattern as flags.evaluateAt.
+func (c *Cluster) leaderConsideredDeadAt(now time.Time, timeout time.Duration) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return now.Sub(c.lastLeaderHeartbeat) > timeout
 }

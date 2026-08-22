@@ -1,15 +1,18 @@
 // cmd/node is the memory-backed entry point for running a local
-// multi-node Orion cluster during development — separate from
-// cmd/server, which stays the Postgres-backed single-node production
-// path and is untouched by any of this.
+// multi-node Orion cluster during development.
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"sync"
+	"syscall"
+	"time"
 
 	"orion/internal/api"
 	"orion/internal/audit"
@@ -18,10 +21,6 @@ import (
 	"orion/internal/store"
 )
 
-// nodeConfig bundles cluster.Config (NodeID + Peers, what the cluster
-// package actually needs) together with Port and the resolved Self
-// node — both of which are cmd/node's own concerns, not the cluster
-// package's.
 type nodeConfig struct {
 	Cluster cluster.Config
 	Self    cluster.Node
@@ -45,7 +44,7 @@ func main() {
 	writer := service.NewMemoryFlagWriter(backend, auditBackend)
 	rpcClient := cluster.NewClient()
 	manager := cluster.NewManager(c, writer, rpcClient)
-	rpcHandler := cluster.NewRPCHandler(backend)
+	rpcHandler := cluster.NewRPCHandler(backend, c)
 
 	h := api.NewHandler(backend, auditBackend, manager)
 	mux := h.Routes()
@@ -55,15 +54,43 @@ func main() {
 	log.Printf("Orion node %q listening on %s (leader=%s, is_leader=%v, peers=%d)",
 		cfg.Cluster.NodeID, addr, leaderID, c.IsLeader(), len(c.Peers))
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal(err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var wg sync.WaitGroup
+
+	if c.IsLeader() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			log.Printf("node %q starting heartbeat loop (interval=%s)", cfg.Cluster.NodeID, cluster.DefaultHeartbeatInterval)
+			cluster.RunHeartbeatLoop(ctx, c, rpcClient, cluster.DefaultHeartbeatInterval)
+			log.Printf("node %q heartbeat loop stopped", cfg.Cluster.NodeID)
+		}()
 	}
+
+	srv := &http.Server{Addr: addr, Handler: mux}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("http server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("node %q received shutdown signal, stopping...", cfg.Cluster.NodeID)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http server shutdown error: %v", err)
+	}
+
+	wg.Wait()
+	log.Printf("node %q stopped cleanly", cfg.Cluster.NodeID)
 }
 
-// loadConfig reads NODE_ID, PORT, and PEERS from the environment and
-// validates them as a single unit, including that NODE_ID actually
-// appears somewhere in PEERS. os.Getenv only ever happens here —
-// never inside the cluster package.
 func loadConfig() (nodeConfig, error) {
 	nodeID := os.Getenv("NODE_ID")
 	if nodeID == "" {

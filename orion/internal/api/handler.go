@@ -29,6 +29,7 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /flags/{key}", h.delete)
 	mux.HandleFunc("POST /flags/{key}/evaluate", h.evaluate)
 	mux.HandleFunc("GET /flags/{key}/audit", h.listAudit)
+	mux.HandleFunc("GET /cluster/status", h.clusterStatus)
 	return mux
 }
 
@@ -111,6 +112,10 @@ func (h *Handler) listAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (h *Handler) clusterStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.Cluster.Status())
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

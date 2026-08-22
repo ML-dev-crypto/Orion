@@ -79,8 +79,7 @@ func (m *Manager) Delete(ctx context.Context, key string) (flags.Flag, error) {
 }
 
 // replicate sends f to every peer in parallel, waits for every
-// attempt to finish, and returns how many SUCCEEDED — not just how
-// many were attempted (that's the change from stage 2).
+// attempt to finish, and returns how many SUCCEEDED.
 func (m *Manager) replicate(f flags.Flag) int {
 	var wg sync.WaitGroup
 	var successes atomic.Int32
@@ -124,17 +123,20 @@ func (m *Manager) replicateDelete(key string) int {
 }
 
 type Status struct {
-	SelfID   string `json:"self_id"`
-	LeaderID string `json:"leader_id"`
-	IsLeader bool   `json:"is_leader"`
-	Peers    []Node `json:"peers"`
+	SelfID          string `json:"self_id"`
+	LeaderID        string `json:"leader_id"`
+	IsLeader        bool   `json:"is_leader"`
+	LeaderReachable bool   `json:"leader_reachable"`
+	Peers           []Node `json:"peers"`
 }
 
 func (m *Manager) Status() Status {
+	reachable := m.cluster.IsLeader() || !m.cluster.LeaderConsideredDead(DefaultLeaderTimeout)
 	return Status{
-		SelfID:   m.cluster.Self.ID,
-		LeaderID: m.cluster.LeaderID(),
-		IsLeader: m.cluster.IsLeader(),
-		Peers:    m.cluster.Peers,
+		SelfID:          m.cluster.Self.ID,
+		LeaderID:        m.cluster.LeaderID(),
+		IsLeader:        m.cluster.IsLeader(),
+		LeaderReachable: reachable,
+		Peers:           m.cluster.Peers,
 	}
 }

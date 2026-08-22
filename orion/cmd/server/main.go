@@ -42,7 +42,7 @@ func main() {
 	}
 	rpcClient := cluster.NewClient()
 	manager := cluster.NewManager(c, writer, rpcClient)
-	rpcHandler := cluster.NewRPCHandler(backend)
+	rpcHandler := cluster.NewRPCHandler(backend, c)
 
 	h := api.NewHandler(backend, auditBackend, manager)
 	mux := h.Routes()

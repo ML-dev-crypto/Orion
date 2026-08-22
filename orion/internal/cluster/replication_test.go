@@ -17,7 +17,12 @@ import (
 func newFollowerServer(t *testing.T) (*httptest.Server, store.Storage) {
 	t.Helper()
 	s := store.NewMemoryStore()
-	h := NewRPCHandler(s)
+	dummySelf := Node{ID: "follower-under-test"}
+	dummyCluster, err := NewCluster(dummySelf, []Node{dummySelf}, dummySelf.ID)
+	if err != nil {
+		t.Fatalf("NewCluster for follower failed: %v", err)
+	}
+	h := NewRPCHandler(s, dummyCluster)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	srv := httptest.NewServer(mux)
